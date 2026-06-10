@@ -54,6 +54,21 @@ public static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetWindowDisplayAffinity(IntPtr windowHandle, uint affinity);
 
+    /// Applies capture exclusion unless a `debug-capture.flag` file sits
+    /// next to the exe. The flag exists for automated visual verification —
+    /// capture exclusion makes the overlay invisible to screenshots, which
+    /// is correct in production but makes the buddy untestable by tools
+    /// that see the screen the same way screenshots do.
+    public static void ApplyCaptureExclusion(IntPtr windowHandle)
+    {
+        bool debugCaptureFlagPresent = System.IO.File.Exists(
+            System.IO.Path.Combine(AppContext.BaseDirectory, "debug-capture.flag"));
+        if (!debugCaptureFlagPresent)
+        {
+            SetWindowDisplayAffinity(windowHandle, WDA_EXCLUDEFROMCAPTURE);
+        }
+    }
+
     // ── Window positioning ───────────────────────────────────────────
 
     public static readonly IntPtr HWND_TOPMOST = new(-1);

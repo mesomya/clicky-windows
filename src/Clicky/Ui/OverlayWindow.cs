@@ -122,6 +122,7 @@ public class OverlayWindow : Window
         this.companionManager = companionManager;
 
         // Transparent, borderless, topmost, no taskbar entry, never focused.
+        Title = "Clicky";
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
         Background = System.Windows.Media.Brushes.Transparent;
@@ -248,7 +249,7 @@ public class OverlayWindow : Window
 
         // Keep the buddy out of screenshots and screen recordings — the
         // equivalent of the original excluding its own windows from capture.
-        NativeMethods.SetWindowDisplayAffinity(windowHandle, NativeMethods.WDA_EXCLUDEFROMCAPTURE);
+        NativeMethods.ApplyCaptureExclusion(windowHandle);
 
         // Cover the screen exactly, in physical pixels (DPI-safe).
         NativeMethods.SetWindowPos(
@@ -959,6 +960,7 @@ public class OverlayWindowManager
             overlayWindows.Add(overlayWindow);
             overlayWindow.Show();
         }
+        DebugTrace.Log($"overlay shown on {overlayWindows.Count} screen(s), firstAppearance: {isFirstAppearance}");
     }
 
     public void HideOverlay()

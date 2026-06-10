@@ -68,10 +68,16 @@ public sealed class TrayIconManager : IDisposable
         }
     }
 
+    /// Called when the user launches a second Clicky.exe while one is
+    /// already running — open the panel so the double-click visibly did
+    /// something.
+    public void ShowPanelFromExternalSignal() => ShowPanel();
+
     private void ShowPanel()
     {
         panelWindow ??= new CompanionPanelWindow(companionManager);
         panelWindow.ShowNearTray();
+        DebugTrace.Log($"panel shown at ({panelWindow.Left:F0},{panelWindow.Top:F0}) size {panelWindow.ActualWidth:F0}x{panelWindow.ActualHeight:F0}");
     }
 
     private void HidePanel()

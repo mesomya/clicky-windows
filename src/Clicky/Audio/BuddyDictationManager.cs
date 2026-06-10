@@ -275,6 +275,7 @@ public sealed class BuddyDictationManager
         else
         {
             System.Diagnostics.Debug.WriteLine($"❌ Buddy dictation error ({transcriptionProvider.DisplayName}): {recognitionError}");
+            DebugTrace.Log($"dictation ERROR ({transcriptionProvider.DisplayName}): {recognitionError.Message}");
             LastErrorMessage = UserFacingErrorMessage(recognitionError, "couldn't transcribe that. try again.");
             CancelCurrentDictation();
         }

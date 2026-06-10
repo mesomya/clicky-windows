@@ -13,3 +13,10 @@ clicky-mac-reference/
 # Copyrighted onboarding music from the original repo — not redistributed.
 # Users can drop their own ff.mp3 into src/Clicky/assets/ to enable it.
 *.mp3
+
+# Verification-only: presence disables capture exclusion + enables tracing.
+# Must never ship — it would make the buddy appear in the AI's screenshots.
+debug-capture.flag
+debug-start-onboarding.flag
+clicky-debug.log
+crash.log

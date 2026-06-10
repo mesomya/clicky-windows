@@ -24,15 +24,18 @@ namespace Clicky.Ui;
 public class CompanionPanelWindow : Window
 {
     private readonly CompanionManager companionManager;
-
-    private readonly Ellipse statusDot = new() { Width = 8, Height = 8 };
-    private readonly TextBlock statusText = MakeText("", 12, FontWeights.Medium, DS.Brushes.TextTertiary);
     private readonly StackPanel contentStack = new();
+
+    /// Set when the panel is shown; Deactivated within this window is
+    /// ignored so the auto-opened panel can't flash-hide if Windows denies
+    /// foreground activation to a background-launched process.
+    private DateTime lastShownAtUtc = DateTime.MinValue;
 
     public CompanionPanelWindow(CompanionManager companionManager)
     {
         this.companionManager = companionManager;
 
+        Title = "Clicky";
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
         Background = System.Windows.Media.Brushes.Transparent;
@@ -67,8 +70,15 @@ public class CompanionPanelWindow : Window
         WhisperTranscriptionProvider.ModelDownloadStatusChanged += HandleWhisperStatusChanged;
 
         // Click-outside dismissal: hiding on deactivate gives the same
-        // transient feel as the original's global click monitor.
-        Deactivated += (_, _) => Hide();
+        // transient feel as the original's global click monitor. The grace
+        // window stops the panel from flash-hiding right after auto-open.
+        Deactivated += (_, _) =>
+        {
+            if ((DateTime.UtcNow - lastShownAtUtc).TotalSeconds > 1.5)
+            {
+                Hide();
+            }
+        };
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -76,7 +86,7 @@ public class CompanionPanelWindow : Window
         base.OnSourceInitialized(e);
         // Keep the panel out of the AI's screenshots, like every Clicky window.
         var windowHandle = new WindowInteropHelper(this).Handle;
-        NativeMethods.SetWindowDisplayAffinity(windowHandle, NativeMethods.WDA_EXCLUDEFROMCAPTURE);
+        NativeMethods.ApplyCaptureExclusion(windowHandle);
     }
 
     private void HandleManagerStateChanged()
@@ -103,6 +113,7 @@ public class CompanionPanelWindow : Window
     /// down below the menu bar status item.
     public void ShowNearTray()
     {
+        lastShownAtUtc = DateTime.UtcNow;
         companionManager.RefreshAllPermissions();
         RebuildContent();
         Show();
@@ -162,6 +173,12 @@ public class CompanionPanelWindow : Window
 
     private UIElement BuildHeader()
     {
+        // Built fresh on every rebuild — reusing element instances across
+        // rebuilds crashes WPF ("already the logical child of another
+        // element") the second time the panel opens.
+        var statusDot = new Ellipse { Width = 8, Height = 8 };
+        var statusText = MakeText("", 12, FontWeights.Medium, DS.Brushes.TextTertiary);
+
         statusDot.Fill = StatusDotBrush();
         statusDot.Effect = new DropShadowEffect
         {

@@ -267,6 +267,7 @@ public sealed class CompanionManager
             return;
         }
         VoiceState = newState;
+        DebugTrace.Log($"voice state -> {newState}");
         NotifyStateChanged();
     }
 
@@ -312,16 +313,19 @@ public sealed class CompanionManager
 
                 ClickyAnalytics.TrackPushToTalkStarted();
 
+                DebugTrace.Log("hotkey pressed — push-to-talk starting");
                 _ = BuddyDictationManager.StartPushToTalkFromKeyboardShortcutAsync(finalTranscript =>
                 {
                     LastTranscript = finalTranscript;
                     System.Diagnostics.Debug.WriteLine($"🗣️ Companion received transcript: {finalTranscript}");
+                    DebugTrace.Log($"transcript: \"{finalTranscript}\"");
                     ClickyAnalytics.TrackUserMessageSent(finalTranscript);
                     SendTranscriptToClaudeWithScreenshot(finalTranscript);
                 });
                 break;
 
             case ShortcutTransition.Released:
+                DebugTrace.Log("hotkey released");
                 ClickyAnalytics.TrackPushToTalkReleased();
                 BuddyDictationManager.StopPushToTalkFromKeyboardShortcut();
                 break;
@@ -410,7 +414,9 @@ public sealed class CompanionManager
                     Label: capture.Label + $" (image dimensions: {capture.ScreenshotWidthInPixels}x{capture.ScreenshotHeightInPixels} pixels)"))
                 .ToList();
 
+            DebugTrace.Log($"sending to claude: {labeledImages.Count} screen(s)");
             string fullResponseText = await brainClient.AnalyzeImagesAsync(labeledImages, transcript, cancellationToken);
+            DebugTrace.Log($"claude responded: \"{fullResponseText[..Math.Min(140, fullResponseText.Length)]}\"");
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -453,6 +459,7 @@ public sealed class CompanionManager
                 DetectedElementScreenLocation = globalLocation;
                 DetectedElementDisplayBounds = displayBounds;
                 DetectedElementChanged?.Invoke();
+                DebugTrace.Log($"pointing at ({globalLocation.X},{globalLocation.Y}) \"{parseResult.ElementLabel}\"");
                 ClickyAnalytics.TrackElementPointed(parseResult.ElementLabel);
                 System.Diagnostics.Debug.WriteLine(
                     $"🎯 Element pointing: ({(int)pointCoordinate.X}, {(int)pointCoordinate.Y}) → \"{parseResult.ElementLabel ?? "element"}\"");
@@ -475,6 +482,7 @@ public sealed class CompanionManager
                 try
                 {
                     await edgeTtsClient.SpeakTextAsync(spokenText, cancellationToken);
+                    DebugTrace.Log("tts playback started");
                     SetVoiceState(CompanionVoiceState.Responding);
                 }
                 catch (OperationCanceledException)
@@ -485,6 +493,7 @@ public sealed class CompanionManager
                 {
                     ClickyAnalytics.TrackTTSError(ttsError.Message);
                     System.Diagnostics.Debug.WriteLine($"⚠️ Edge TTS error: {ttsError}");
+                    DebugTrace.Log($"tts ERROR: {ttsError.Message}");
                     SpeakOfflineFallback("my voice is not working. check your internet connection and try again.");
                 }
             }
@@ -492,11 +501,13 @@ public sealed class CompanionManager
         catch (OperationCanceledException)
         {
             // User spoke again — response was interrupted.
+            DebugTrace.Log("response cancelled (user spoke again)");
         }
         catch (Exception responseError)
         {
             ClickyAnalytics.TrackResponseError(responseError.Message);
             System.Diagnostics.Debug.WriteLine($"⚠️ Companion response error: {responseError}");
+            DebugTrace.Log($"response ERROR: {responseError.Message}");
             SpeakOfflineFallback("i could not reach my brain. make sure claude code is installed and signed in.");
         }
 
@@ -662,6 +673,7 @@ public sealed class CompanionManager
     /// finished. Streams the try-it prompt, then fires the pointing demo.
     public void OnWelcomeAnimationFinished()
     {
+        DebugTrace.Log("welcome animation finished — streaming prompt, demo in 7s");
         StartOnboardingPromptStream();
 
         var demoTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(7) };
@@ -881,10 +893,12 @@ public sealed class CompanionManager
 
                 System.Diagnostics.Debug.WriteLine(
                     $"🎯 Onboarding demo: pointing at \"{parseResult.ElementLabel ?? "element"}\" — \"{parseResult.SpokenText}\"");
+                DebugTrace.Log($"demo pointed at \"{parseResult.ElementLabel}\" saying \"{parseResult.SpokenText}\"");
             }
             catch (Exception demoError)
             {
                 System.Diagnostics.Debug.WriteLine($"⚠️ Onboarding demo error: {demoError.Message}");
+                DebugTrace.Log($"demo ERROR: {demoError.Message}");
             }
         });
     }
