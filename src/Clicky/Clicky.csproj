@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Clicky</RootNamespace>
+    <AssemblyName>Clicky</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- WFAC010: the WinForms analyzer dislikes manifest-based DPI config,
+         but this is a WPF app (WinForms is only along for NotifyIcon/Screen)
+         and PerMonitorV2 via manifest is the correct WPF approach. -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
+    <Platforms>AnyCPU;x64</Platforms>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The WinForms SDK injects global usings for System.Drawing and
+         System.Windows.Forms, which collide with WPF types (Color,
+         Application, ...). Files that need them import them explicitly. -->
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Microphone capture + audio playback -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- Local Whisper speech-to-text (whisper.cpp bindings) -->
+    <PackageReference Include="Whisper.net" Version="1.7.4" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.7.4" />
+    <!-- Windows built-in speech recognition fallback + offline TTS fallback -->
+    <PackageReference Include="System.Speech" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Optional onboarding music. Globbed so the build doesn't fail when the
+         file is absent — it's gitignored because the original's ff.mp3 is
+         copyrighted game music we don't redistribute. Drop any ff.mp3 here
+         to enable onboarding music; the app skips it gracefully if missing. -->
+    <None Include="assets\*.mp3" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

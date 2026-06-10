@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+.env
+.env.*
+publish/
+
+# The reference clone is for development only — never publish it.
+clicky-mac-reference/
+
+# Copyrighted onboarding music from the original repo — not redistributed.
+# Users can drop their own ff.mp3 into src/Clicky/assets/ to enable it.
+*.mp3
