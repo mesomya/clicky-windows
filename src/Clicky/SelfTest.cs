@@ -57,6 +57,9 @@ public static class SelfTest
                 case "speakers":
                     RunSpeakerPickerTest(extraArg).GetAwaiter().GetResult();
                     break;
+                case "btdiag":
+                    RunBluetoothDiag().GetAwaiter().GetResult();
+                    break;
                 default:
                     Log($"unknown selftest '{testName}'");
                     return 2;
@@ -75,6 +78,133 @@ public static class SelfTest
     {
         Console.WriteLine(message);
         File.AppendAllText(LogFilePath, message + "\n");
+    }
+
+    // ── Bluetooth diagnosis: does opening the mic mute the output? ───
+
+    /// The decisive experiment for "my AirPods are silent only when Clicky
+    /// runs". Plays a phrase to the default output device and measures its
+    /// own loopback in three scenarios: (A) with no microphone opened,
+    /// (B) right after a mic open/close, (C) a few seconds after. If A is
+    /// loud but B is silent, opening the mic suspends the output device
+    /// (classic Bluetooth A2DP→HFP switch) — which is exactly Clicky's flow.
+    private static Task RunBluetoothDiag()
+    {
+        string renderId;
+        using (var deviceEnumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator())
+        {
+            var render = deviceEnumerator.GetDefaultAudioEndpoint(
+                NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
+            renderId = render.ID;
+            Log($"output device: {render.FriendlyName}");
+            try
+            {
+                var micConsole = deviceEnumerator.GetDefaultAudioEndpoint(
+                    NAudio.CoreAudioApi.DataFlow.Capture, NAudio.CoreAudioApi.Role.Console);
+                Log($"mic Clicky captures (Console role): {micConsole.FriendlyName}");
+            }
+            catch { }
+            try
+            {
+                var micComms = deviceEnumerator.GetDefaultAudioEndpoint(
+                    NAudio.CoreAudioApi.DataFlow.Capture, NAudio.CoreAudioApi.Role.Communications);
+                Log($"default COMMUNICATIONS mic: {micComms.FriendlyName}");
+            }
+            catch { }
+        }
+
+        float peakNoMic = PlayPhraseAndMeasureLoopback(renderId, "scenario a. no microphone was opened.");
+        Log($"A (no mic):          output loopback peak = {peakNoMic:F4}");
+
+        OpenAndCloseDefaultMic(2);
+        float peakRightAfterMic = PlayPhraseAndMeasureLoopback(renderId, "scenario b. right after the microphone closed.");
+        Log($"B (right after mic): output loopback peak = {peakRightAfterMic:F4}");
+
+        OpenAndCloseDefaultMic(2);
+        System.Threading.Thread.Sleep(5000);
+        float peakDelayedAfterMic = PlayPhraseAndMeasureLoopback(renderId, "scenario c. five seconds after the microphone.");
+        Log($"C (5s after mic):    output loopback peak = {peakDelayedAfterMic:F4}");
+
+        Log($"SUMMARY  A={peakNoMic:F3}  B={peakRightAfterMic:F3}  C={peakDelayedAfterMic:F3}");
+        if (peakNoMic > 0.05 && peakRightAfterMic < peakNoMic * 0.2)
+        {
+            Log("=> CONFIRMED: opening the mic SUSPENDS the output device (Bluetooth A2DP->HFP). That's why Clicky is silent.");
+            if (peakDelayedAfterMic > peakNoMic * 0.5)
+            {
+                Log("=> ...but waiting a few seconds restores it — a post-mic delay before speaking would fix it.");
+            }
+        }
+        else if (peakNoMic > 0.05 && peakRightAfterMic > 0.05)
+        {
+            Log("=> Opening the mic did NOT suspend the output. The cause is elsewhere (not the A2DP/HFP switch).");
+        }
+        return Task.CompletedTask;
+    }
+
+    private static void OpenAndCloseDefaultMic(int seconds)
+    {
+        try
+        {
+            using var microphoneCapture = new NAudio.CoreAudioApi.WasapiCapture();
+            microphoneCapture.StartRecording();
+            System.Threading.Thread.Sleep(seconds * 1000);
+            microphoneCapture.StopRecording();
+            System.Threading.Thread.Sleep(300);
+        }
+        catch (Exception micError)
+        {
+            Log($"   (mic open/close failed: {micError.Message})");
+        }
+    }
+
+    private static float PlayPhraseAndMeasureLoopback(string deviceId, string phrase)
+    {
+        float peak = 0;
+        try
+        {
+            using var waveStream = new MemoryStream();
+            using (var synthesizer = new System.Speech.Synthesis.SpeechSynthesizer())
+            {
+                synthesizer.SetOutputToWaveStream(waveStream);
+                synthesizer.Speak(phrase);
+            }
+            waveStream.Position = 0;
+
+            using var deviceEnumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+            using var device = deviceEnumerator.GetDevice(deviceId);
+
+            using var loopbackCapture = new NAudio.Wave.WasapiLoopbackCapture(device);
+            var loopbackFormat = loopbackCapture.WaveFormat;
+            loopbackCapture.DataAvailable += (_, dataEvent) =>
+            {
+                float[] mono = Audio.BuddyAudioConversionSupport.ConvertCaptureBufferToMonoFloat(
+                    dataEvent.Buffer, dataEvent.BytesRecorded, loopbackFormat);
+                foreach (float sample in mono)
+                {
+                    float magnitude = Math.Abs(sample);
+                    if (magnitude > peak) peak = magnitude;
+                }
+            };
+            loopbackCapture.StartRecording();
+
+            using var waveReader = new NAudio.Wave.WaveFileReader(waveStream);
+            using var resampler = new NAudio.Wave.MediaFoundationResampler(waveReader, device.AudioClient.MixFormat);
+            using var wasapiOut = new NAudio.Wave.WasapiOut(
+                device, NAudio.CoreAudioApi.AudioClientShareMode.Shared, true, 150);
+            wasapiOut.Init(resampler);
+            wasapiOut.Play();
+            while (wasapiOut.PlaybackState == NAudio.Wave.PlaybackState.Playing)
+            {
+                System.Threading.Thread.Sleep(100);
+            }
+            System.Threading.Thread.Sleep(400);
+            loopbackCapture.StopRecording();
+        }
+        catch (Exception measureError)
+        {
+            Log($"   (play+measure failed: {measureError.Message})");
+        }
+        return peak;
     }
 
     // ── Speaker picker: play to every output device, announced ───────

@@ -182,6 +182,7 @@ public sealed class CompanionManager
         currentResponseCancellation?.Cancel();
         permissionPollTimer?.Stop();
         StopOnboardingMusic();
+        edgeTtsClient.StopKeepAlive();
         edgeTtsClient.StopPlayback();
         brainClient.Dispose();
     }
@@ -257,10 +258,12 @@ public sealed class CompanionManager
                 SetVoiceState(CompanionVoiceState.Idle);
                 // If the user tapped the hotkey without saying anything, no
                 // response task runs — schedule the transient hide here so
-                // the overlay doesn't get stuck visible.
+                // the overlay doesn't get stuck visible, and let the keepalive
+                // (started on the press) stop.
                 if (currentResponseCancellation == null)
                 {
                     ScheduleTransientHideIfNeeded();
+                    edgeTtsClient.StopKeepAlive();
                 }
             }
         };
@@ -320,6 +323,11 @@ public sealed class CompanionManager
                 DismissOnboardingPromptIfShowing();
 
                 ClickyAnalytics.TrackPushToTalkStarted();
+
+                // Keep the (Bluetooth) output device awake from the instant the
+                // user starts talking, so it doesn't drop to standby during the
+                // silent thinking window and make the answer land elsewhere.
+                edgeTtsClient.StartKeepAlive();
 
                 DebugTrace.Log("hotkey pressed — push-to-talk starting");
                 _ = BuddyDictationManager.StartPushToTalkFromKeyboardShortcutAsync(finalTranscript =>
@@ -542,6 +550,8 @@ public sealed class CompanionManager
             {
                 SetVoiceState(CompanionVoiceState.Idle);
                 ScheduleTransientHideIfNeeded();
+                // Answer delivered — let the output device idle again.
+                edgeTtsClient.StopKeepAlive();
             }
         }
 

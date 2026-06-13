@@ -159,6 +159,63 @@ public sealed class EdgeTtsClient
         audioReader = null;
     }
 
+    // ── Bluetooth keep-alive ─────────────────────────────────────────
+
+    private IWavePlayer? keepAlivePlayer;
+
+    /// Streams an inaudible tone to the output device to stop a Bluetooth
+    /// headset from dropping to standby during the silent "thinking" window.
+    /// Without this, the headset disconnects mid-thought, Windows falls back
+    /// to the laptop speakers, and the spoken answer lands on the wrong
+    /// device — the user hears nothing in their headphones. Started when the
+    /// user begins talking; stopped after the answer finishes.
+    public void StartKeepAlive()
+    {
+        try
+        {
+            if (keepAlivePlayer != null)
+            {
+                return;
+            }
+            var deviceEnumerator = new MMDeviceEnumerator();
+            var device = ResolveOutputDevice(deviceEnumerator);
+            var mixFormat = device.AudioClient.MixFormat;
+
+            // ~-64 dB sine: physically inaudible, but enough signal to keep
+            // the A2DP stream (and the Bluetooth link) from idling out.
+            var inaudibleTone = new NAudio.Wave.SampleProviders.SignalGenerator(mixFormat.SampleRate, mixFormat.Channels)
+            {
+                Type = NAudio.Wave.SampleProviders.SignalGeneratorType.Sin,
+                Frequency = 40,
+                Gain = 0.0006,
+            };
+
+            var player = new WasapiOut(device, AudioClientShareMode.Shared, useEventSync: true, latency: 200);
+            player.Init(inaudibleTone);
+            player.Play();
+            keepAlivePlayer = player;
+            DebugTrace.Log($"keepalive started on {device.FriendlyName}");
+        }
+        catch (Exception keepAliveError)
+        {
+            DebugTrace.Log($"keepalive failed: {keepAliveError.Message}");
+        }
+    }
+
+    public void StopKeepAlive()
+    {
+        try
+        {
+            keepAlivePlayer?.Stop();
+            keepAlivePlayer?.Dispose();
+        }
+        catch
+        {
+            // Teardown race — safe to ignore.
+        }
+        keepAlivePlayer = null;
+    }
+
     // ── Synthesis ────────────────────────────────────────────────────
 
     private static async Task<byte[]> SynthesizeToMp3Async(string text, CancellationToken cancellationToken)
