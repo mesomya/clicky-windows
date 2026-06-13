@@ -51,6 +51,9 @@ public static class SelfTest
                 case "diagnose":
                     RunLiveDiagnostic().GetAwaiter().GetResult();
                     break;
+                case "audioroute":
+                    RunAudioRouteTest().GetAwaiter().GetResult();
+                    break;
                 default:
                     Log($"unknown selftest '{testName}'");
                     return 2;
@@ -69,6 +72,59 @@ public static class SelfTest
     {
         Console.WriteLine(message);
         File.AppendAllText(LogFilePath, message + "\n");
+    }
+
+    // ── Audio routing proof (does sound reach the default device?) ───
+
+    /// Plays a spoken phrase while simultaneously recording the default
+    /// output device's own loopback. If the loopback captures sound, the
+    /// audio physically reached that device — proving (without a human)
+    /// whether TTS lands on the speaker the user is actually listening on.
+    private static async Task RunAudioRouteTest()
+    {
+        using var deviceEnumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+        var renderDevice = deviceEnumerator.GetDefaultAudioEndpoint(
+            NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
+        Log($"default output endpoint: {renderDevice.FriendlyName}");
+
+        float loopbackPeak = 0;
+        long loopbackSamples = 0;
+        using var loopbackCapture = new NAudio.Wave.WasapiLoopbackCapture(renderDevice);
+        var loopbackFormat = loopbackCapture.WaveFormat;
+        loopbackCapture.DataAvailable += (_, dataEvent) =>
+        {
+            float[] mono = Audio.BuddyAudioConversionSupport.ConvertCaptureBufferToMonoFloat(
+                dataEvent.Buffer, dataEvent.BytesRecorded, loopbackFormat);
+            loopbackSamples += mono.Length;
+            foreach (float sample in mono)
+            {
+                float magnitude = Math.Abs(sample);
+                if (magnitude > loopbackPeak) loopbackPeak = magnitude;
+            }
+        };
+
+        loopbackCapture.StartRecording();
+        Log("playing a TTS phrase while recording that device's loopback…");
+
+        var ttsClient = new Tts.EdgeTtsClient();
+        await ttsClient.SpeakTextAsync(
+            "testing audio output routing. one, two, three.", CancellationToken.None);
+        while (ttsClient.IsPlaying)
+        {
+            await Task.Delay(200);
+        }
+        await Task.Delay(400);
+        loopbackCapture.StopRecording();
+
+        Log($"loopback captured {loopbackSamples} samples, PEAK {loopbackPeak:F4}");
+        if (loopbackPeak > 0.002)
+        {
+            Log($"VERDICT: audio IS reaching '{renderDevice.FriendlyName}' — what you're listening on. ✓");
+        }
+        else
+        {
+            Log("VERDICT: NO audio on the default output device — TTS is landing on a DIFFERENT device.");
+        }
     }
 
     // ── Live end-to-end diagnostic (real mic + real speakers) ────────

@@ -17,6 +17,7 @@ using System.IO;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 namespace Clicky.Tts;
@@ -33,6 +34,7 @@ public sealed class EdgeTtsClient
 
     private IWavePlayer? audioPlayer;
     private Mp3FileReader? audioReader;
+    private MediaFoundationResampler? audioResampler;
 
     /// Warms up the connection to the Edge voice service at app launch.
     /// The FIRST synthesis of a session pays a large one-time cost (DNS,
@@ -70,18 +72,47 @@ public sealed class EdgeTtsClient
         cancellationToken.ThrowIfCancellationRequested();
 
         StopPlayback();
-
-        audioReader = new Mp3FileReader(new MemoryStream(mp3Audio));
-        // DeviceNumber = -1 → the system DEFAULT output device. Without this
-        // NAudio uses device 0 (the first enumerated one), which may not be
-        // the speaker/headphones the user is actually listening on — a common
-        // "I can't hear it" cause on machines with several audio outputs.
-        var player = new WaveOutEvent { DeviceNumber = -1 };
-        player.Init(audioReader);
-        player.Play();
-        audioPlayer = player;
+        StartPlaybackToDefaultDevice(mp3Audio);
 
         System.Diagnostics.Debug.WriteLine($"🔊 Edge TTS: playing {mp3Audio.Length / 1024}KB audio");
+    }
+
+    /// Plays the MP3 to the system DEFAULT render endpoint via WASAPI — the
+    /// device the user actually selected (e.g. Bluetooth AirPods). The legacy
+    /// WaveOut mapper frequently routes to the built-in laptop speakers
+    /// instead, so audio "played with no error" yet was inaudible on
+    /// headphones. WASAPI shared mode needs the source resampled to the
+    /// device's mix format. Falls back to WaveOut if WASAPI can't initialise.
+    private void StartPlaybackToDefaultDevice(byte[] mp3Audio)
+    {
+        try
+        {
+            var deviceEnumerator = new MMDeviceEnumerator();
+            var renderDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            var deviceMixFormat = renderDevice.AudioClient.MixFormat;
+
+            audioReader = new Mp3FileReader(new MemoryStream(mp3Audio));
+            audioResampler = new MediaFoundationResampler(audioReader, deviceMixFormat) { ResamplerQuality = 60 };
+
+            var wasapiOut = new WasapiOut(renderDevice, AudioClientShareMode.Shared, useEventSync: true, latency: 150);
+            wasapiOut.Init(audioResampler);
+            wasapiOut.Play();
+            audioPlayer = wasapiOut;
+
+            DebugTrace.Log($"tts -> WASAPI default endpoint: {renderDevice.FriendlyName}");
+        }
+        catch (Exception wasapiError)
+        {
+            DebugTrace.Log($"tts WASAPI output failed ({wasapiError.Message}); falling back to WaveOut");
+            audioResampler?.Dispose(); audioResampler = null;
+            audioReader?.Dispose();
+
+            audioReader = new Mp3FileReader(new MemoryStream(mp3Audio));
+            var waveOut = new WaveOutEvent { DeviceNumber = -1 };
+            waveOut.Init(audioReader);
+            waveOut.Play();
+            audioPlayer = waveOut;
+        }
     }
 
     public bool IsPlaying => audioPlayer?.PlaybackState == PlaybackState.Playing;
@@ -92,6 +123,7 @@ public sealed class EdgeTtsClient
         {
             audioPlayer?.Stop();
             audioPlayer?.Dispose();
+            audioResampler?.Dispose();
             audioReader?.Dispose();
         }
         catch
@@ -99,6 +131,7 @@ public sealed class EdgeTtsClient
             // Player teardown races with the playback thread; safe to ignore.
         }
         audioPlayer = null;
+        audioResampler = null;
         audioReader = null;
     }
 
