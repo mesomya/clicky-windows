@@ -98,6 +98,15 @@ public static class NativeMethods
     public const int VK_RCONTROL = 0xA3;
     public const int VK_LMENU = 0xA4;   // Left Alt
     public const int VK_RMENU = 0xA5;   // Right Alt
+    public const int VK_CONTROL = 0x11; // Either Ctrl
+    public const int VK_MENU = 0x12;    // Either Alt
+
+    /// Reads the true current up/down state of a key. Using this in the hook
+    /// (instead of tracking key-up/down deltas ourselves) means we can never
+    /// desync — if the hook ever misses an event, the next keystroke still
+    /// reads the real Ctrl/Alt state and recovers.
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int virtualKey);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct KBDLLHOOKSTRUCT
@@ -123,4 +132,39 @@ public static class NativeMethods
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr GetModuleHandleW(string? moduleName);
+
+    // ── Message pump (for the dedicated keyboard-hook thread) ────────
+    // The hook must live on a thread that constantly pumps messages, or
+    // Windows silently removes it the moment that thread stalls. We give it
+    // its own thread with a GetMessage loop so app/UI work can never kill it.
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSG
+    {
+        public IntPtr WindowHandle;
+        public uint Message;
+        public IntPtr WParam;
+        public IntPtr LParam;
+        public uint Time;
+        public POINT Point;
+    }
+
+    public const uint WM_QUIT = 0x0012;
+
+    [DllImport("user32.dll")]
+    public static extern int GetMessageW(out MSG message, IntPtr windowHandle, uint filterMin, uint filterMax);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool TranslateMessage(ref MSG message);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr DispatchMessageW(ref MSG message);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostThreadMessageW(uint threadId, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
 }

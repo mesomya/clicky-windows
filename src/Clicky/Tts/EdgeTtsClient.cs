@@ -45,7 +45,11 @@ public sealed class EdgeTtsClient
         StopPlayback();
 
         audioReader = new Mp3FileReader(new MemoryStream(mp3Audio));
-        var player = new WaveOutEvent();
+        // DeviceNumber = -1 → the system DEFAULT output device. Without this
+        // NAudio uses device 0 (the first enumerated one), which may not be
+        // the speaker/headphones the user is actually listening on — a common
+        // "I can't hear it" cause on machines with several audio outputs.
+        var player = new WaveOutEvent { DeviceNumber = -1 };
         player.Init(audioReader);
         player.Play();
         audioPlayer = player;

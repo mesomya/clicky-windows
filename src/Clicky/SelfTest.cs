@@ -48,6 +48,9 @@ public static class SelfTest
                 case "stt":
                     RunSttTest().GetAwaiter().GetResult();
                     break;
+                case "diagnose":
+                    RunLiveDiagnostic().GetAwaiter().GetResult();
+                    break;
                 default:
                     Log($"unknown selftest '{testName}'");
                     return 2;
@@ -66,6 +69,135 @@ public static class SelfTest
     {
         Console.WriteLine(message);
         File.AppendAllText(LogFilePath, message + "\n");
+    }
+
+    // ── Live end-to-end diagnostic (real mic + real speakers) ────────
+
+    /// Captures the actual microphone for a few seconds, measures the audio
+    /// level (proves the mic delivers sound), transcribes it with Whisper,
+    /// lists the default audio devices, and plays a spoken test phrase
+    /// (proves audio output). This is the "is everything actually working
+    /// on my hardware" check the whole pipeline depends on.
+    private static async Task RunLiveDiagnostic()
+    {
+        const int captureSeconds = 6;
+
+        // 1) Which devices are we using?
+        using (var deviceEnumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator())
+        {
+            try
+            {
+                var defaultMic = deviceEnumerator.GetDefaultAudioEndpoint(
+                    NAudio.CoreAudioApi.DataFlow.Capture, NAudio.CoreAudioApi.Role.Communications);
+                Log($"default microphone: {defaultMic.FriendlyName}");
+            }
+            catch (Exception micDeviceError) { Log($"NO default microphone: {micDeviceError.Message}"); }
+
+            try
+            {
+                var defaultSpeaker = deviceEnumerator.GetDefaultAudioEndpoint(
+                    NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
+                Log($"default speaker: {defaultSpeaker.FriendlyName}");
+            }
+            catch (Exception speakerDeviceError) { Log($"NO default speaker: {speakerDeviceError.Message}"); }
+        }
+
+        // 2) Capture the live microphone and measure the level.
+        Log($"recording the microphone for {captureSeconds}s — SPEAK NOW (say: testing one two three)…");
+        var capturedSamples = new List<float>();
+        int capturedSampleRate = 16000;
+        float peakLevel = 0;
+        var captureFinished = new TaskCompletionSource<bool>();
+
+        using (var microphoneCapture = new NAudio.CoreAudioApi.WasapiCapture())
+        {
+            var captureFormat = microphoneCapture.WaveFormat;
+            capturedSampleRate = captureFormat.SampleRate;
+            Log($"capture format: {captureFormat.SampleRate}Hz, {captureFormat.Channels}ch, {captureFormat.BitsPerSample}bit {captureFormat.Encoding}");
+
+            microphoneCapture.DataAvailable += (_, dataEvent) =>
+            {
+                float[] mono = Audio.BuddyAudioConversionSupport.ConvertCaptureBufferToMonoFloat(
+                    dataEvent.Buffer, dataEvent.BytesRecorded, captureFormat);
+                capturedSamples.AddRange(mono);
+                foreach (float sample in mono)
+                {
+                    float magnitude = Math.Abs(sample);
+                    if (magnitude > peakLevel) peakLevel = magnitude;
+                }
+            };
+            microphoneCapture.RecordingStopped += (_, _) => captureFinished.TrySetResult(true);
+
+            try
+            {
+                microphoneCapture.StartRecording();
+            }
+            catch (Exception captureStartError)
+            {
+                throw new InvalidOperationException(
+                    $"microphone could not start — likely blocked in Settings > Privacy > Microphone, or no mic. ({captureStartError.Message})");
+            }
+
+            await Task.Delay(captureSeconds * 1000);
+            microphoneCapture.StopRecording();
+            await captureFinished.Task;
+        }
+
+        float rmsLevel = Audio.BuddyAudioConversionSupport.ComputeRootMeanSquare(capturedSamples.ToArray());
+        Log($"captured {capturedSamples.Count} samples ({capturedSamples.Count / (double)capturedSampleRate:F1}s)");
+        Log($"mic PEAK level: {peakLevel:F4}  RMS level: {rmsLevel:F4}");
+        if (peakLevel < 0.0005)
+        {
+            Log("VERDICT: microphone delivered (near) SILENCE — the mic is muted, blocked, or the wrong device is default.");
+        }
+        else if (peakLevel < 0.02)
+        {
+            Log("VERDICT: microphone is alive but very quiet — only faint/ambient sound captured.");
+        }
+        else
+        {
+            Log("VERDICT: microphone is capturing real sound. ✓");
+        }
+
+        // 3) Transcribe what was captured (proves live STT on real mic audio).
+        try
+        {
+            var whisperFactory = await Audio.WhisperTranscriptionProvider.EnsureFactoryReadyAsync();
+            float[] whisperSamples = Audio.BuddyAudioConversionSupport.ResampleMono(
+                capturedSamples.ToArray(), capturedSampleRate, Audio.WhisperTranscriptionProvider.WhisperSampleRate);
+            var transcriptParts = new List<string>();
+            await using (var processor = whisperFactory.CreateBuilder().WithLanguage("auto").Build())
+            {
+                await foreach (var segment in processor.ProcessAsync(whisperSamples))
+                {
+                    transcriptParts.Add(segment.Text);
+                }
+            }
+            string transcript = string.Join(" ", transcriptParts).Trim();
+            Log($"Whisper heard: \"{transcript}\"");
+        }
+        catch (Exception transcribeError)
+        {
+            Log($"Whisper FAILED on the captured audio: {transcribeError.Message}");
+        }
+
+        // 4) Play a spoken test phrase (proves audio output reaches the speakers).
+        try
+        {
+            Log("playing a spoken test phrase through your speakers now…");
+            var ttsClient = new Tts.EdgeTtsClient();
+            await ttsClient.SpeakTextAsync(
+                "this is clicky. if you can hear this, your speakers are working.", CancellationToken.None);
+            while (ttsClient.IsPlaying)
+            {
+                await Task.Delay(200);
+            }
+            Log("test phrase finished playing (did you hear it?).");
+        }
+        catch (Exception ttsError)
+        {
+            Log($"audio output FAILED: {ttsError.Message}");
+        }
     }
 
     // ── [POINT] parsing ──────────────────────────────────────────────
