@@ -37,6 +37,15 @@ public class ClickySettings
     /// Edge neural voice used to speak responses.
     public string TtsVoice { get; set; } = "en-US-AvaMultilingualNeural";
 
+    /// Output device Clicky speaks through. Empty = the Windows default
+    /// output. Set to a specific endpoint ID to force a reliable device
+    /// (e.g. the laptop speakers) when the default (often auto-switching
+    /// Bluetooth headphones) doesn't actually reach your ears.
+    public string OutputDeviceId { get; set; } = "";
+
+    /// Friendly name of the chosen output device, for display only.
+    public string OutputDeviceName { get; set; } = "";
+
     /// Whether Clicky registers itself to launch on sign-in.
     public bool LaunchAtStartup { get; set; } = true;
 

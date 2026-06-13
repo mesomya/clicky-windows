@@ -26,10 +26,10 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
-        // Headless smoke tests: Clicky.exe --selftest <point|tts|brain|stt>
+        // Headless smoke tests: Clicky.exe --selftest <name> [arg]
         if (args.Length >= 2 && args[0] == "--selftest")
         {
-            Environment.Exit(SelfTest.Run(args[1]));
+            Environment.Exit(SelfTest.Run(args[1], args.Length >= 3 ? args[2] : null));
             return;
         }
 

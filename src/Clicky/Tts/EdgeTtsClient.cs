@@ -88,7 +88,7 @@ public sealed class EdgeTtsClient
         try
         {
             var deviceEnumerator = new MMDeviceEnumerator();
-            var renderDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            var renderDevice = ResolveOutputDevice(deviceEnumerator);
             var deviceMixFormat = renderDevice.AudioClient.MixFormat;
 
             audioReader = new Mp3FileReader(new MemoryStream(mp3Audio));
@@ -113,6 +113,30 @@ public sealed class EdgeTtsClient
             waveOut.Play();
             audioPlayer = waveOut;
         }
+    }
+
+    /// Picks the render device Clicky speaks through: the user-pinned device
+    /// from settings if it's set and still active, otherwise the Windows
+    /// default. Pinning lets the user escape auto-switching Bluetooth.
+    private static MMDevice ResolveOutputDevice(MMDeviceEnumerator deviceEnumerator)
+    {
+        string preferredId = ClickySettings.Current.OutputDeviceId;
+        if (!string.IsNullOrEmpty(preferredId))
+        {
+            try
+            {
+                var pinned = deviceEnumerator.GetDevice(preferredId);
+                if (pinned is { State: DeviceState.Active })
+                {
+                    return pinned;
+                }
+            }
+            catch
+            {
+                // Pinned device unplugged/removed — fall through to default.
+            }
+        }
+        return deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
     }
 
     public bool IsPlaying => audioPlayer?.PlaybackState == PlaybackState.Playing;

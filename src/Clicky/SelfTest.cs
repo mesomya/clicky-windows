@@ -29,7 +29,7 @@ public static class SelfTest
 {
     private static readonly string LogFilePath = Path.Combine(Path.GetTempPath(), "clicky-selftest.log");
 
-    public static int Run(string testName)
+    public static int Run(string testName, string? extraArg = null)
     {
         File.WriteAllText(LogFilePath, $"== clicky selftest: {testName} ==\n");
         try
@@ -54,6 +54,9 @@ public static class SelfTest
                 case "audioroute":
                     RunAudioRouteTest().GetAwaiter().GetResult();
                     break;
+                case "speakers":
+                    RunSpeakerPickerTest(extraArg).GetAwaiter().GetResult();
+                    break;
                 default:
                     Log($"unknown selftest '{testName}'");
                     return 2;
@@ -74,6 +77,100 @@ public static class SelfTest
         File.AppendAllText(LogFilePath, message + "\n");
     }
 
+    // ── Speaker picker: play to every output device, announced ───────
+
+    /// Plays a spoken "this is device number N" through EVERY active output
+    /// device in turn, so the user can identify which one actually reaches
+    /// their ears (Bluetooth auto-switching means the "default" may be off
+    /// serving their phone). Pass a number to PIN that device as Clicky's
+    /// output: `--selftest speakers 2`.
+    // Synchronous on purpose: MMDevice COM objects are apartment-bound and
+    // break if an await hops the work onto another thread. We stay on the
+    // (STA) caller thread and re-fetch each device by ID just before use.
+    private static Task RunSpeakerPickerTest(string? pinChoice)
+    {
+        var deviceInfos = new List<(string Id, string Name)>();
+        string defaultId = "";
+        using (var deviceEnumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator())
+        {
+            try
+            {
+                defaultId = deviceEnumerator.GetDefaultAudioEndpoint(
+                    NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia).ID;
+            }
+            catch { }
+            // Read id + name up front, before any playback disturbs COM state.
+            foreach (var device in deviceEnumerator.EnumerateAudioEndPoints(
+                         NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.DeviceState.Active))
+            {
+                deviceInfos.Add((device.ID, device.FriendlyName));
+            }
+        }
+
+        if (deviceInfos.Count == 0)
+        {
+            Log("no active output devices found.");
+            return Task.CompletedTask;
+        }
+
+        // Pin mode: save the chosen device and confirm out loud.
+        if (int.TryParse(pinChoice, out int chosenIndex) && chosenIndex >= 1 && chosenIndex <= deviceInfos.Count)
+        {
+            var (id, name) = deviceInfos[chosenIndex - 1];
+            ClickySettings.Current.OutputDeviceId = id;
+            ClickySettings.Current.OutputDeviceName = name;
+            ClickySettings.Current.Save();
+            Log($"PINNED Clicky's voice to device {chosenIndex}: {name}");
+            PlayPhraseToDeviceById(id, $"clicky will now speak through {name}. you're all set.");
+            return Task.CompletedTask;
+        }
+
+        Log($"found {deviceInfos.Count} output device(s). Playing a number through each — tell me which you HEAR:");
+        for (int deviceIndex = 0; deviceIndex < deviceInfos.Count; deviceIndex++)
+        {
+            var (id, name) = deviceInfos[deviceIndex];
+            Log($"  device {deviceIndex + 1}: {name}{(id == defaultId ? "  (current default)" : "")}");
+            PlayPhraseToDeviceById(id,
+                $"device number {deviceIndex + 1}. if you hear this, remember the number {deviceIndex + 1}.");
+            System.Threading.Thread.Sleep(700);
+        }
+        Log("done. Re-run with the number you heard to lock it in, e.g.  --selftest speakers 2");
+        return Task.CompletedTask;
+    }
+
+    /// Synthesises a phrase with the offline Windows voice (no network) and
+    /// plays it to one specific device (fetched fresh by ID) via WASAPI.
+    private static void PlayPhraseToDeviceById(string deviceId, string phrase)
+    {
+        try
+        {
+            using var waveStream = new MemoryStream();
+            using (var synthesizer = new System.Speech.Synthesis.SpeechSynthesizer())
+            {
+                synthesizer.SetOutputToWaveStream(waveStream);
+                synthesizer.Speak(phrase);
+            }
+            waveStream.Position = 0;
+
+            using var deviceEnumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+            using var device = deviceEnumerator.GetDevice(deviceId);
+            using var waveReader = new NAudio.Wave.WaveFileReader(waveStream);
+            using var resampler = new NAudio.Wave.MediaFoundationResampler(waveReader, device.AudioClient.MixFormat);
+            using var wasapiOut = new NAudio.Wave.WasapiOut(
+                device, NAudio.CoreAudioApi.AudioClientShareMode.Shared, true, 150);
+            wasapiOut.Init(resampler);
+            wasapiOut.Play();
+            while (wasapiOut.PlaybackState == NAudio.Wave.PlaybackState.Playing)
+            {
+                System.Threading.Thread.Sleep(100);
+            }
+        }
+        catch (Exception playError)
+        {
+            Log($"    (couldn't play to device {deviceId}: {playError.Message})");
+        }
+    }
+
     // ── Audio routing proof (does sound reach the default device?) ───
 
     /// Plays a spoken phrase while simultaneously recording the default
@@ -83,9 +180,20 @@ public static class SelfTest
     private static async Task RunAudioRouteTest()
     {
         using var deviceEnumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
-        var renderDevice = deviceEnumerator.GetDefaultAudioEndpoint(
-            NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
-        Log($"default output endpoint: {renderDevice.FriendlyName}");
+        // Capture the device TTS will ACTUALLY use (the pinned one if set),
+        // so this proof reflects what the user will hear.
+        NAudio.CoreAudioApi.MMDevice renderDevice;
+        string pinnedId = ClickySettings.Current.OutputDeviceId;
+        if (!string.IsNullOrEmpty(pinnedId))
+        {
+            try { renderDevice = deviceEnumerator.GetDevice(pinnedId); }
+            catch { renderDevice = deviceEnumerator.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia); }
+        }
+        else
+        {
+            renderDevice = deviceEnumerator.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
+        }
+        Log($"output endpoint TTS will use: {renderDevice.FriendlyName}");
 
         float loopbackPeak = 0;
         long loopbackSamples = 0;
