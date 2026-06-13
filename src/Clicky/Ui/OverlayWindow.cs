@@ -65,6 +65,8 @@ public class OverlayWindow : Window
     private readonly TextBlock navigationBubbleText;
     private readonly ScaleTransform navigationBubbleScale;
     private readonly DropShadowEffect navigationBubbleGlow;
+    private readonly Border responseBubble;
+    private readonly TextBlock responseBubbleText;
 
     // ── Animation state (mirrors BlueCursorView's @State) ───────────
 
@@ -94,6 +96,11 @@ public class OverlayWindow : Window
     private double welcomeBubbleOpacity;
     private double navigationBubbleOpacityTarget;
     private double navigationBubbleCurrentOpacity;
+    private double responseBubbleOpacityTarget;
+    private double responseBubbleCurrentOpacity;
+    private System.Windows.Point responseBubbleAnchor;
+    private bool responseBubbleOnThisScreen;
+    private DispatcherTimer? responseBubbleHideTimer;
 
     private TimeSpan lastRenderTime = TimeSpan.Zero;
     private double animationClockSeconds;
@@ -229,6 +236,9 @@ public class OverlayWindow : Window
         navigationBubbleGlow = (DropShadowEffect)navigationBubble.Effect!;
         rootCanvas.Children.Add(navigationBubble);
 
+        (responseBubble, responseBubbleText) = BuildResponseBubble();
+        rootCanvas.Children.Add(responseBubble);
+
         // Seed the buddy position from the current cursor so it doesn't
         // flash at (0,0) before the first frame.
         var initialCursor = GetCursorPositionInLocalDips() ?? new System.Windows.Point(100, 100);
@@ -243,6 +253,7 @@ public class OverlayWindow : Window
         Closed += HandleClosed;
 
         companionManager.DetectedElementChanged += HandleDetectedElementChanged;
+        companionManager.ResponseTextChanged += HandleResponseTextChanged;
     }
 
     // ── Window setup ─────────────────────────────────────────────────
@@ -312,6 +323,36 @@ public class OverlayWindow : Window
             isRenderLoopAttached = false;
         }
         companionManager.DetectedElementChanged -= HandleDetectedElementChanged;
+        companionManager.ResponseTextChanged -= HandleResponseTextChanged;
+        responseBubbleHideTimer?.Stop();
+    }
+
+    /// Shows Claude's answer as readable text, anchored where the buddy is now
+    /// and frozen there so it doesn't jump around while the user reads it. It
+    /// fades out after a dwell time that scales with the answer's length.
+    private void HandleResponseTextChanged()
+    {
+        string? text = companionManager.ResponseText;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        responseBubbleText.Text = text;
+        responseBubbleAnchor = buddyPosition;
+        responseBubbleOnThisScreen = isCursorOnThisScreen;
+        responseBubbleOpacityTarget = 1.0;
+        DebugTrace.Log($"response bubble: show \"{text[..Math.Min(40, text.Length)]}\" at ({responseBubbleAnchor.X:F0},{responseBubbleAnchor.Y:F0}) onThisScreen={responseBubbleOnThisScreen}");
+
+        responseBubbleHideTimer?.Stop();
+        double dwellSeconds = Math.Clamp(text.Length / 9.0, 14, 40);
+        responseBubbleHideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(dwellSeconds) };
+        responseBubbleHideTimer.Tick += (_, _) =>
+        {
+            responseBubbleHideTimer?.Stop();
+            responseBubbleOpacityTarget = 0.0;
+        };
+        responseBubbleHideTimer.Start();
     }
 
     private DoubleAnimationState? cursorOpacityAnimation;
@@ -383,6 +424,38 @@ public class OverlayWindow : Window
         }
 
         return canvas;
+    }
+
+    /// Wider, wrapping bubble for Claude's full spoken answer shown as text.
+    private static (Border bubble, TextBlock text) BuildResponseBubble()
+    {
+        var text = new TextBlock
+        {
+            FontSize = 13,
+            FontWeight = FontWeights.Medium,
+            Foreground = DS.Brushes.White,
+            FontFamily = new FontFamily("Segoe UI"),
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 300,
+            LineHeight = 18,
+        };
+        var bubble = new Border
+        {
+            Child = text,
+            Background = DS.Brushes.OverlayCursorBlue,
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12, 9, 12, 9),
+            MaxWidth = 324,
+            Opacity = 0,
+            Effect = new DropShadowEffect
+            {
+                Color = System.Windows.Media.Color.FromRgb(0, 0, 0),
+                ShadowDepth = 2,
+                BlurRadius = 12,
+                Opacity = 0.45,
+            },
+        };
+        return (bubble, text);
     }
 
     /// Speech bubble matching the original: blue rounded rect, white 11pt
@@ -618,6 +691,7 @@ public class OverlayWindow : Window
         spinnerStateOpacity = StepToward(spinnerStateOpacity, spinnerTarget, deltaSeconds / 0.15);
 
         navigationBubbleCurrentOpacity = StepToward(navigationBubbleCurrentOpacity, navigationBubbleOpacityTarget, deltaSeconds / 0.4);
+        responseBubbleCurrentOpacity = StepToward(responseBubbleCurrentOpacity, responseBubbleOpacityTarget, deltaSeconds / 0.35);
 
         // The bubble's pop-in scale springs toward 1 after starting at 0.5.
         double currentScale = navigationBubbleScale.ScaleX;
@@ -724,6 +798,22 @@ public class OverlayWindow : Window
             buddyNavigationMode == BuddyNavigationMode.PointingAtTarget && navigationBubbleText.Text.Length > 0
                 ? navigationBubbleCurrentOpacity
                 : 0;
+
+        // Response bubble — frozen at its anchor (so it's readable, doesn't
+        // chase the cursor), clamped to stay on-screen.
+        double responseX = responseBubbleAnchor.X + 16;
+        if (responseX + responseBubble.ActualWidth > ActualWidth - 8)
+        {
+            responseX = Math.Max(8, ActualWidth - responseBubble.ActualWidth - 8);
+        }
+        double responseY = responseBubbleAnchor.Y + 22;
+        if (responseY + responseBubble.ActualHeight > ActualHeight - 8)
+        {
+            responseY = Math.Max(8, responseBubbleAnchor.Y - responseBubble.ActualHeight - 8);
+        }
+        Canvas.SetLeft(responseBubble, responseX);
+        Canvas.SetTop(responseBubble, responseY);
+        responseBubble.Opacity = responseBubbleOnThisScreen ? responseBubbleCurrentOpacity : 0;
     }
 
     private void PositionBubble(Border bubble)

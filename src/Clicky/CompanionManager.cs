@@ -58,6 +58,18 @@ public sealed class CompanionManager
     public Rectangle? DetectedElementDisplayBounds { get; private set; }
     public string? DetectedElementBubbleText { get; private set; }
 
+    /// Claude's latest spoken answer, also shown as TEXT next to the cursor so
+    /// the user can READ it even when audio output is failing (e.g. flaky
+    /// Bluetooth). The overlay shows it on ResponseTextChanged.
+    public string? ResponseText { get; private set; }
+    public event Action? ResponseTextChanged;
+
+    private void SetResponseText(string text)
+    {
+        ResponseText = text;
+        uiDispatcher.BeginInvoke(() => ResponseTextChanged?.Invoke());
+    }
+
     /// Raised when the tray panel should close (push-to-talk started, etc).
     public static event Action? DismissPanelRequested;
     public static void RequestDismissPanel() => DismissPanelRequested?.Invoke();
@@ -324,11 +336,6 @@ public sealed class CompanionManager
 
                 ClickyAnalytics.TrackPushToTalkStarted();
 
-                // Keep the (Bluetooth) output device awake from the instant the
-                // user starts talking, so it doesn't drop to standby during the
-                // silent thinking window and make the answer land elsewhere.
-                edgeTtsClient.StartKeepAlive();
-
                 DebugTrace.Log("hotkey pressed — push-to-talk starting");
                 _ = BuddyDictationManager.StartPushToTalkFromKeyboardShortcutAsync(finalTranscript =>
                 {
@@ -449,6 +456,13 @@ public sealed class CompanionManager
 
             var parseResult = ParsePointingCoordinates(fullResponseText);
             string spokenText = parseResult.SpokenText;
+
+            // Show the answer as text immediately — independent of whether the
+            // audio will actually reach the user's speaker/headphones.
+            if (!string.IsNullOrWhiteSpace(spokenText))
+            {
+                SetResponseText(spokenText);
+            }
 
             // Switch to idle BEFORE setting the location so the triangle
             // becomes visible and can fly to the target — the spinner would

@@ -72,7 +72,20 @@ public sealed class EdgeTtsClient
         cancellationToken.ThrowIfCancellationRequested();
 
         StopPlayback();
-        StartPlaybackToDefaultDevice(mp3Audio);
+
+        // Initialising a WASAPI stream on a flaky Bluetooth endpoint can BLOCK
+        // indefinitely (the device never finishes negotiating). Run it on a
+        // background thread with a hard 8s ceiling so a stuck audio device can
+        // never freeze the buddy in the "loading" state — if it stalls we give
+        // up on audio and let the pipeline move on.
+        var playbackStart = Task.Run(() => StartPlaybackToDefaultDevice(mp3Audio));
+        var completed = await Task.WhenAny(playbackStart, Task.Delay(8000, cancellationToken));
+        if (completed != playbackStart)
+        {
+            DebugTrace.Log("tts playback init STALLED (audio device not responding) — giving up on audio");
+            throw new TimeoutException("the audio device did not start playback in time");
+        }
+        await playbackStart; // surface any exception thrown during init
 
         System.Diagnostics.Debug.WriteLine($"🔊 Edge TTS: playing {mp3Audio.Length / 1024}KB audio");
     }
