@@ -150,13 +150,19 @@ public sealed class CompanionManager
         BindShortcutTransitions();
         GlobalPushToTalkShortcutMonitor.Start();
 
-        // Warm the Whisper model (download on first run) so the first
-        // push-to-talk doesn't stall — the original similarly warmed the
-        // Claude TLS connection at startup.
+        // Warm everything that has a slow cold-start, so the user's FIRST
+        // interaction is as fast as later ones (the cold first call was the
+        // big "it processed then ghosted" culprit — TTS alone stalled ~24s
+        // on first use):
+        //  - Whisper model load (and download on first ever run)
+        //  - the Edge voice connection (DNS/TLS/IPv6 priming)
+        //  - the headless Claude brain process
         if (ClickySettings.Current.VoiceTranscriptionProvider == "whisper")
         {
             _ = WhisperTranscriptionProvider.EnsureFactoryReadyAsync();
         }
+        _ = EdgeTtsClient.WarmUpAsync();
+        _ = Task.Run(() => brainClient.WarmUp());
 
         if (HasCompletedOnboarding && AllPermissionsGranted && IsClickyCursorEnabled)
         {
@@ -283,10 +289,12 @@ public sealed class CompanionManager
             case ShortcutTransition.Pressed:
                 if (BuddyDictationManager.IsDictationInProgress)
                 {
+                    DebugTrace.Log("hotkey pressed but IGNORED — a previous dictation is still in progress (stuck?)");
                     return;
                 }
                 if (!HasCompletedOnboarding || !AllPermissionsGranted)
                 {
+                    DebugTrace.Log($"hotkey pressed but IGNORED — onboarded={HasCompletedOnboarding}, mic={AllPermissionsGranted}");
                     return;
                 }
 
@@ -379,6 +387,17 @@ public sealed class CompanionManager
     /// to Claude, and plays the response aloud. The cursor stays in the
     /// spinner state until TTS audio begins playing. A [POINT:...] tag in
     /// the response triggers the buddy's flight to that element.
+    /// Verification hook (debug builds only): runs the EXACT production
+    /// response pipeline — screenshot → Claude → Edge TTS — on a supplied
+    /// transcript, with no microphone involved. Lets the automated harness
+    /// reproduce and trace the "processing then ghost" path on demand.
+    public void DebugInjectTranscript(string transcript)
+    {
+        DebugTrace.Log($"DEBUG inject transcript: \"{transcript}\"");
+        LastTranscript = transcript;
+        SendTranscriptToClaudeWithScreenshot(transcript);
+    }
+
     private void SendTranscriptToClaudeWithScreenshot(string transcript)
     {
         currentResponseCancellation?.Cancel();

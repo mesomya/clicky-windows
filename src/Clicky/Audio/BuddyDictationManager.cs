@@ -302,7 +302,12 @@ public sealed class BuddyDictationManager
 
         if (!string.IsNullOrEmpty(finalTranscriptText))
         {
+            DebugTrace.Log($"dictation finalized -> submitting \"{finalTranscriptText}\"");
             submitCallback?.Invoke(finalTranscriptText);
+        }
+        else
+        {
+            DebugTrace.Log("dictation finalized -> EMPTY transcript, nothing submitted (buddy just returns to idle)");
         }
     }
 

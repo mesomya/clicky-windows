@@ -156,9 +156,12 @@ public class WhisperTranscriptionProvider : IBuddyTranscriptionProvider
     private sealed class WhisperStreamingSession : IBuddyStreamingTranscriptionSession
     {
         // Whisper produces no live partials in this buffer-then-transcribe
-        // design, so the fallback timer is generous — it only exists to
-        // unstick the UI if transcription hangs entirely.
-        public double FinalTranscriptFallbackDelaySeconds => 30.0;
+        // design, so the fallback timer only exists to unstick the UI if
+        // transcription hangs entirely. Kept modest so a stuck transcription
+        // can't lock out the hotkey (IsDictationInProgress) for too long —
+        // a too-long value was a likely cause of "the second press does
+        // nothing".
+        public double FinalTranscriptFallbackDelaySeconds => 12.0;
 
         private readonly List<float> bufferedSamples = new(capacity: 16000 * 30);
         private int bufferedSampleRate = WhisperSampleRate;
@@ -213,10 +216,15 @@ public class WhisperTranscriptionProvider : IBuddyTranscriptionProvider
                     float[] whisperReadySamples = BuddyAudioConversionSupport.ResampleMono(
                         utteranceSamples, utteranceSampleRate, WhisperSampleRate);
 
+                    float peak = 0;
+                    foreach (float s in whisperReadySamples) { float m = Math.Abs(s); if (m > peak) peak = m; }
+                    DebugTrace.Log($"whisper: {utteranceSamples.Length} captured @ {utteranceSampleRate}Hz -> {whisperReadySamples.Length} @16k, peak {peak:F4} ({whisperReadySamples.Length / (double)WhisperSampleRate:F1}s)");
+
                     // Skip near-silent utterances (quick tap of the hotkey) —
                     // whisper hallucinates text on silence.
                     if (whisperReadySamples.Length < WhisperSampleRate / 4)
                     {
+                        DebugTrace.Log("whisper: utterance too short (<0.25s), returning empty");
                         if (!isCancelled) onFinalTranscriptReady("");
                         return;
                     }
@@ -245,6 +253,20 @@ public class WhisperTranscriptionProvider : IBuddyTranscriptionProvider
                     string transcript = string.Join(" ", transcriptParts)
                         .Replace("  ", " ")
                         .Trim();
+
+                    // Whisper emits bracketed/parenthesized markers for
+                    // non-speech audio — [BLANK_AUDIO], [ Silence ], (wind),
+                    // ♪♪♪ etc. Strip those; if nothing with letters remains,
+                    // treat it as silence so we don't fire a real query for it.
+                    string withoutMarkers = System.Text.RegularExpressions.Regex
+                        .Replace(transcript, @"\[[^\]]*\]|\([^\)]*\)|♪", "").Trim();
+                    if (!withoutMarkers.Any(char.IsLetter))
+                    {
+                        DebugTrace.Log($"whisper: non-speech marker only (\"{transcript}\") -> empty");
+                        transcript = "";
+                    }
+
+                    DebugTrace.Log($"whisper transcript: \"{transcript}\"");
                     onFinalTranscriptReady(transcript);
                 }
                 catch (Exception transcriptionError)

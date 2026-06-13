@@ -120,15 +120,28 @@ public class ClickyApplication : Application
         {
             return;
         }
-        var pollTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        var pollTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         pollTimer.Tick += (_, _) =>
         {
-            string commandPath = System.IO.Path.Combine(AppContext.BaseDirectory, "debug-start-onboarding.flag");
-            if (System.IO.File.Exists(commandPath))
+            string onboardingPath = System.IO.Path.Combine(AppContext.BaseDirectory, "debug-start-onboarding.flag");
+            if (System.IO.File.Exists(onboardingPath))
             {
-                try { System.IO.File.Delete(commandPath); } catch { }
+                try { System.IO.File.Delete(onboardingPath); } catch { }
                 DebugTrace.Log("debug command: trigger onboarding");
                 companionManager?.TriggerOnboarding();
+            }
+
+            // debug-say.txt: run the real screenshot -> Claude -> TTS pipeline
+            // on the file's text, exactly as if it were a finalized transcript.
+            string sayPath = System.IO.Path.Combine(AppContext.BaseDirectory, "debug-say.txt");
+            if (System.IO.File.Exists(sayPath))
+            {
+                string transcript = "";
+                try { transcript = System.IO.File.ReadAllText(sayPath).Trim(); System.IO.File.Delete(sayPath); } catch { }
+                if (!string.IsNullOrWhiteSpace(transcript))
+                {
+                    companionManager?.DebugInjectTranscript(transcript);
+                }
             }
         };
         pollTimer.Start();

@@ -87,9 +87,12 @@ public static class SelfTest
         {
             try
             {
+                // Role.Console = the "Default device" Clicky actually captures
+                // from (NAudio's WasapiCapture uses this role), NOT the
+                // separate "Default communications device".
                 var defaultMic = deviceEnumerator.GetDefaultAudioEndpoint(
-                    NAudio.CoreAudioApi.DataFlow.Capture, NAudio.CoreAudioApi.Role.Communications);
-                Log($"default microphone: {defaultMic.FriendlyName}");
+                    NAudio.CoreAudioApi.DataFlow.Capture, NAudio.CoreAudioApi.Role.Console);
+                Log($"microphone Clicky will use: {defaultMic.FriendlyName}");
             }
             catch (Exception micDeviceError) { Log($"NO default microphone: {micDeviceError.Message}"); }
 
@@ -160,6 +163,7 @@ public static class SelfTest
         }
 
         // 3) Transcribe what was captured (proves live STT on real mic audio).
+        string liveTranscript = "";
         try
         {
             var whisperFactory = await Audio.WhisperTranscriptionProvider.EnsureFactoryReadyAsync();
@@ -173,30 +177,52 @@ public static class SelfTest
                     transcriptParts.Add(segment.Text);
                 }
             }
-            string transcript = string.Join(" ", transcriptParts).Trim();
-            Log($"Whisper heard: \"{transcript}\"");
+            liveTranscript = string.Join(" ", transcriptParts).Trim();
+            Log($"Whisper heard: \"{liveTranscript}\"");
         }
         catch (Exception transcribeError)
         {
             Log($"Whisper FAILED on the captured audio: {transcribeError.Message}");
         }
 
-        // 4) Play a spoken test phrase (proves audio output reaches the speakers).
+        // 4) THE FULL LOOP: send what you said (plus a screenshot) to Claude
+        //    and speak the real answer — exactly what pressing Ctrl+Alt does.
+        var ttsClient = new Tts.EdgeTtsClient();
         try
         {
-            Log("playing a spoken test phrase through your speakers now…");
-            var ttsClient = new Tts.EdgeTtsClient();
-            await ttsClient.SpeakTextAsync(
-                "this is clicky. if you can hear this, your speakers are working.", CancellationToken.None);
+            string toSpeak;
+            if (!string.IsNullOrWhiteSpace(liveTranscript))
+            {
+                Log("sending what you said + a screenshot to Claude…");
+                var captures = Capture.CompanionScreenCaptureUtility.CaptureAllScreensAsJpeg();
+                var labeledImages = captures
+                    .Select(c => (c.ImageData, c.Label + $" (image dimensions: {c.ScreenshotWidthInPixels}x{c.ScreenshotHeightInPixels} pixels)"))
+                    .ToList();
+                using var brain = new Brain.ClaudeCodeBrainClient(
+                    "you're clicky, a friendly screen buddy. answer in one or two short spoken sentences. no markdown.",
+                    ClickySettings.Current.SelectedModel, isEphemeralSession: true);
+                var started = DateTime.UtcNow;
+                string answer = await brain.AnalyzeImagesAsync(labeledImages, liveTranscript, CancellationToken.None);
+                Log($"Claude answered ({(DateTime.UtcNow - started).TotalSeconds:F1}s): \"{answer}\"");
+                toSpeak = CompanionManager.ParsePointingCoordinates(answer).SpokenText;
+                if (string.IsNullOrWhiteSpace(toSpeak)) toSpeak = "i heard you, but i don't have anything to say about that.";
+            }
+            else
+            {
+                toSpeak = "this is clicky. if you can hear this, your speakers are working. i did not catch any speech though.";
+            }
+
+            Log("speaking the answer now — LISTEN…");
+            await ttsClient.SpeakTextAsync(toSpeak, CancellationToken.None);
             while (ttsClient.IsPlaying)
             {
                 await Task.Delay(200);
             }
-            Log("test phrase finished playing (did you hear it?).");
+            Log("finished speaking (did you hear it?).");
         }
-        catch (Exception ttsError)
+        catch (Exception loopError)
         {
-            Log($"audio output FAILED: {ttsError.Message}");
+            Log($"full-loop step FAILED: {loopError.Message}");
         }
     }
 

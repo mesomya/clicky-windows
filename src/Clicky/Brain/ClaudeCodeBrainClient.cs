@@ -57,6 +57,23 @@ public sealed class ClaudeCodeBrainClient : IDisposable
         KillProcess();
     }
 
+    /// Pre-spawns the headless claude process at app launch so the first
+    /// real query doesn't pay the cold process-start + model-load cost.
+    /// Best-effort; call on a background thread (it blocks briefly).
+    public void WarmUp()
+    {
+        try
+        {
+            turnLock.Wait();
+            try { EnsureProcessStarted(); }
+            finally { turnLock.Release(); }
+        }
+        catch
+        {
+            // Warm-up is best-effort; the first real turn will start it.
+        }
+    }
+
     // ── CLI discovery ────────────────────────────────────────────────
 
     private static string? cachedCliPath;

@@ -34,12 +34,39 @@ public sealed class EdgeTtsClient
     private IWavePlayer? audioPlayer;
     private Mp3FileReader? audioReader;
 
+    /// Warms up the connection to the Edge voice service at app launch.
+    /// The FIRST synthesis of a session pays a large one-time cost (DNS,
+    /// TLS, IPv6→IPv4 fallback on some networks) — measured at ~20s+ on a
+    /// cold start, which made the user's first spoken answer feel like a
+    /// hang. Doing a throwaway synthesis at startup primes all of that so
+    /// the first REAL answer is fast. Failures are ignored — it's only an
+    /// optimization.
+    public static async Task WarmUpAsync()
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            await SynthesizeToMp3Async("ok", timeout.Token);
+            System.Diagnostics.Debug.WriteLine("🔊 Edge TTS warmed up");
+        }
+        catch
+        {
+            // Warm-up is best-effort; the real call will try again.
+        }
+    }
+
     /// Sends text to Edge TTS and starts playing the resulting audio.
     /// Returns once playback has begun (matching the original client's
     /// contract). Throws on network or decoding errors.
     public async Task SpeakTextAsync(string text, CancellationToken cancellationToken)
     {
-        byte[] mp3Audio = await SynthesizeToMp3Async(text, cancellationToken);
+        // Hard ceiling so a stalled connection can never hang the buddy in
+        // the "processing" state forever — on timeout we throw and the
+        // caller falls back to the offline voice.
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(TimeSpan.FromSeconds(25));
+
+        byte[] mp3Audio = await SynthesizeToMp3Async(text, timeoutSource.Token);
         cancellationToken.ThrowIfCancellationRequested();
 
         StopPlayback();
