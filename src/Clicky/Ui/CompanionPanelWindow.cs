@@ -26,11 +26,6 @@ public class CompanionPanelWindow : Window
     private readonly CompanionManager companionManager;
     private readonly StackPanel contentStack = new();
 
-    /// Set when the panel is shown; Deactivated within this window is
-    /// ignored so the auto-opened panel can't flash-hide if Windows denies
-    /// foreground activation to a background-launched process.
-    private DateTime lastShownAtUtc = DateTime.MinValue;
-
     public CompanionPanelWindow(CompanionManager companionManager)
     {
         this.companionManager = companionManager;
@@ -45,6 +40,11 @@ public class CompanionPanelWindow : Window
         SizeToContent = SizeToContent.Height;
         Width = 336; // 320 content + 16 shadow margin
         WindowStartupLocation = WindowStartupLocation.Manual;
+        // Don't take focus when shown. Otherwise opening the panel deactivates
+        // whatever app the user was in, and that app's window + taskbar button
+        // visibly dim ("go faded"). The panel has no text input, so it never
+        // needs keyboard focus — its buttons still receive mouse clicks.
+        ShowActivated = false;
 
         var panelBorder = new Border
         {
@@ -69,23 +69,29 @@ public class CompanionPanelWindow : Window
         companionManager.StateChanged += HandleManagerStateChanged;
         WhisperTranscriptionProvider.ModelDownloadStatusChanged += HandleWhisperStatusChanged;
 
-        // Click-outside dismissal: hiding on deactivate gives the same
-        // transient feel as the original's global click monitor. The grace
-        // window stops the panel from flash-hiding right after auto-open.
-        Deactivated += (_, _) =>
-        {
-            if ((DateTime.UtcNow - lastShownAtUtc).TotalSeconds > 1.5)
-            {
-                Hide();
-            }
-        };
+        // No click-outside auto-dismiss: a non-activating panel doesn't reliably
+        // receive Deactivated, and we deliberately don't want it stealing focus.
+        // The panel closes via the tray icon toggle, its own ✕ button, the Start
+        // button, or automatically when push-to-talk begins (RequestDismissPanel).
     }
 
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        // Keep the panel out of the AI's screenshots, like every Clicky window.
         var windowHandle = new WindowInteropHelper(this).Handle;
+
+        // Never-activate so showing the panel doesn't deactivate (and visibly
+        // dim) the user's foreground app. WS_EX_NOACTIVATE also keeps it off
+        // the alt-tab list. Clicks on its buttons still work without activation.
+        IntPtr currentStyle = NativeMethods.GetWindowLongPtr(windowHandle, NativeMethods.GWL_EXSTYLE);
+        NativeMethods.SetWindowLongPtr(
+            windowHandle,
+            NativeMethods.GWL_EXSTYLE,
+            new IntPtr(currentStyle.ToInt64()
+                | NativeMethods.WS_EX_NOACTIVATE
+                | NativeMethods.WS_EX_TOOLWINDOW));
+
+        // Keep the panel out of the AI's screenshots, like every Clicky window.
         NativeMethods.ApplyCaptureExclusion(windowHandle);
     }
 
@@ -113,11 +119,11 @@ public class CompanionPanelWindow : Window
     /// down below the menu bar status item.
     public void ShowNearTray()
     {
-        lastShownAtUtc = DateTime.UtcNow;
         companionManager.RefreshAllPermissions();
         RebuildContent();
+        // Show without activating — see ShowActivated/WS_EX_NOACTIVATE above.
+        // No Activate() call: taking focus is exactly what dims the user's app.
         Show();
-        Activate();
 
         var workingArea = WinFormsScreen.PrimaryScreen!.WorkingArea;
         var dpi = VisualTreeHelper.GetDpi(this);

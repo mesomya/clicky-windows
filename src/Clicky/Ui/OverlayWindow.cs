@@ -117,7 +117,22 @@ public class OverlayWindow : Window
 
     public OverlayWindow(WinFormsScreen screen, bool isFirstAppearance, CompanionManager companionManager)
     {
-        this.screenBoundsInPixels = screen.Bounds;
+        // Cover the monitor's WORK AREA (everything except the taskbar), not the
+        // full monitor. A topmost, full-monitor, layered window sitting over the
+        // taskbar makes Windows disable the taskbar's transparency (it looks
+        // "faded") and can trip fullscreen-exclusive optimizations that dim other
+        // windows. Staying inside the work area keeps the buddy off the taskbar.
+        var monitorBounds = screen.Bounds;
+        var workArea = screen.WorkingArea;
+        // When a docked taskbar already shrinks the work area, use it as-is.
+        // When the work area fills the whole monitor (no docked taskbar, or the
+        // taskbar auto-hides), reserve a bottom strip so an auto-hiding taskbar
+        // can pop up ABOVE our overlay instead of appearing dimmed underneath it.
+        // The reserve also guarantees we're never an exact-fullscreen rectangle,
+        // which avoids fullscreen-exclusive optimizations.
+        int bottomReserve = workArea.Height >= monitorBounds.Height ? 48 : 1;
+        this.screenBoundsInPixels = new System.Drawing.Rectangle(
+            workArea.X, workArea.Y, workArea.Width, Math.Max(1, workArea.Height - bottomReserve));
         this.isFirstAppearance = isFirstAppearance;
         this.companionManager = companionManager;
 
